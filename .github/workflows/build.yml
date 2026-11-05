@@ -1,0 +1,64 @@
+name: Build fingerprint-chromium for macOS
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: 'Target CPU'
+        type: choice
+        default: x86_64
+        options: [x86_64, arm64]
+      os:
+        description: 'Runner label'
+        type: string
+        default: macos-26-intel
+      release_tag:
+        description: 'Create/update GitHub Release with this tag (empty = artifact only)'
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build fingerprint-chromium macOS ${{ inputs.arch }}
+    uses: ./.github/workflows/building.yml
+    secrets: inherit
+    with:
+      arch: ${{ inputs.arch }}
+      os: ${{ inputs.os }}
+
+  release:
+    needs: build
+    if: ${{ inputs.release_tag != '' }}
+    name: Publish release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Compute file name
+        id: bake
+        run: |
+          _chromium_version=$(cat ungoogled-chromium/chromium_version.txt)
+          _ungoogled_revision=$(cat ungoogled-chromium/revision.txt)
+          _package_revision=$(cat revision.txt)
+          echo "file_name=fingerprint-chromium_${_chromium_version}-${_ungoogled_revision}.${_package_revision}_${{ inputs.arch }}-macos.dmg" >> $GITHUB_OUTPUT
+      - name: Download built disk image
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.bake.outputs.file_name }}
+      - name: List files
+        run: ls -laR
+      - name: Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ inputs.release_tag }}"
+          FILES="$(find . -name '*.dmg' -o -name '*.hashes.md' | tr '\n' ' ')"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" $FILES --clobber
+          else
+            gh release create "$TAG" $FILES --title "fingerprint-chromium $TAG (macOS, unsigned)" --notes "Unofficial macOS build of adryfish/fingerprint-chromium ${{ steps.bake.outputs.file_name }}. Ad-hoc signed, not notarized: run xattr -cr on the app after mounting."
+          fi
